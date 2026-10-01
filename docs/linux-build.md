@@ -22,13 +22,14 @@ sudo apt install \
 
 | 工具 | 用途 | 必需 |
 |---|---|---|
+| `xclip` | 写入 CLIPBOARD + PRIMARY 选区（X11 剪贴板内容需要持续 owner；缺失时退回应用内置的 arboard 持有） | 否（deb 已声明依赖） |
 | `fcitx-remote` | 粘贴前停用/恢复 IME（fcitx4 自带；fcitx5 用 `fcitx5-remote`，已自动兼容） | 否（缺失时优雅降级，正常粘贴） |
-| `xdotool` | 获取光标位置（bubble/preview 定位） | 否（缺失时回退到默认位置） |
+| `xdotool` | 粘贴按键发送（按窗口类型选择按键策略）、光标定位（bubble/preview） | 否（缺失时粘贴降级为 enigo + Ctrl+V，定位回退默认位置） |
 | `maim` | X11 截图选区（F6） | 否（仅影响截图取词功能） |
 | `grim` + `slurp` | Wayland 截图选区兜底 | 否（仅 Wayland 截图时需要） |
 
 ```bash
-sudo apt install xdotool maim
+sudo apt install xclip xdotool maim
 # Wayland 用户：
 sudo apt install grim slurp
 ```

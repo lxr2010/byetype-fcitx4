@@ -69,7 +69,7 @@
     },
     "linux": {
       "deb": {
-        "depends": ["libxdo3", "xdotool", "maim"]
+        "depends": ["libxdo3", "xdotool", "maim", "xclip"]
       }
     },
     "publisher": "ByeType",

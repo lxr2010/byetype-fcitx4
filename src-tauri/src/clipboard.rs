@@ -2,6 +2,25 @@ use arboard::Clipboard;
 
 use std::borrow::Cow;
 
+/// X11 的剪贴板内容需要持续的有效 owner：arboard 的局部实例在释放后，
+/// 其他应用可能再也读不到刚写入的内容（arboard 文档 Linux 节）。
+/// 因此 Linux 上所有剪贴板读写都复用这个应用生命周期的共享实例；
+/// macOS/Windows 由系统剪贴板服务持有内容，无需此机制。
+#[cfg(target_os = "linux")]
+fn with_shared_clipboard<T>(
+    f: impl FnOnce(&mut Clipboard) -> Result<T, arboard::Error>,
+) -> Result<T, String> {
+    use std::sync::{Mutex, MutexGuard, OnceLock};
+    static HOLDER: OnceLock<Mutex<Option<Clipboard>>> = OnceLock::new();
+    let holder = HOLDER.get_or_init(|| Mutex::new(Clipboard::new().ok()));
+    let mut guard: MutexGuard<'_, Option<Clipboard>> =
+        holder.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    let Some(clipboard) = guard.as_mut() else {
+        return Err("clipboard unavailable".to_string());
+    };
+    f(clipboard).map_err(|e| e.to_string())
+}
+
 /// 剪贴板原内容快照，用于 paste_text 完成后还原。
 /// 仅支持 arboard 能稳定读写的两种类型；文件引用 / 富文本 / 空 → None。
 enum ClipboardSnapshot {
@@ -10,6 +29,29 @@ enum ClipboardSnapshot {
     None,
 }
 
+#[cfg(target_os = "linux")]
+fn snapshot_clipboard() -> ClipboardSnapshot {
+    // 经共享实例读取，与写入方保持同一 owner 视角
+    with_shared_clipboard(|clipboard| {
+        if let Ok(text) = clipboard.get_text() {
+            return Ok(ClipboardSnapshot::Text(text));
+        }
+        match clipboard.get_image() {
+            Ok(img) => Ok(ClipboardSnapshot::Image(arboard::ImageData {
+                width: img.width,
+                height: img.height,
+                bytes: Cow::Owned(img.bytes.into_owned()),
+            })),
+            Err(_) => Ok(ClipboardSnapshot::None),
+        }
+    })
+    .unwrap_or_else(|e| {
+        eprintln!("[clipboard] snapshot: failed to access clipboard: {}", e);
+        ClipboardSnapshot::None
+    })
+}
+
+#[cfg(not(target_os = "linux"))]
 fn snapshot_clipboard() -> ClipboardSnapshot {
     let mut clipboard = match Clipboard::new() {
         Ok(c) => c,
@@ -37,20 +79,36 @@ fn restore_clipboard(snapshot: ClipboardSnapshot) {
     if matches!(snapshot, ClipboardSnapshot::None) {
         return;
     }
-    let mut clipboard = match Clipboard::new() {
-        Ok(c) => c,
-        Err(e) => {
-            eprintln!("[clipboard] restore: failed to open clipboard: {}", e);
-            return;
+    #[cfg(target_os = "linux")]
+    {
+        // 经共享实例写入，还原的内容同样需要持续 owner
+        let result = with_shared_clipboard(|clipboard| match snapshot {
+            ClipboardSnapshot::Text(s) => clipboard.set_text(s),
+            ClipboardSnapshot::Image(i) => clipboard.set_image(i),
+            ClipboardSnapshot::None => Ok(()),
+        });
+        if let Err(e) = result {
+            eprintln!("[clipboard] restore failed: {}", e);
         }
-    };
-    let result = match snapshot {
-        ClipboardSnapshot::Text(s) => clipboard.set_text(s).map_err(|e| format!("set_text: {}", e)),
-        ClipboardSnapshot::Image(i) => clipboard.set_image(i).map_err(|e| format!("set_image: {}", e)),
-        ClipboardSnapshot::None => Ok(()),
-    };
-    if let Err(e) = result {
-        eprintln!("[clipboard] restore failed: {}", e);
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    {
+        let mut clipboard = match Clipboard::new() {
+            Ok(c) => c,
+            Err(e) => {
+                eprintln!("[clipboard] restore: failed to open clipboard: {}", e);
+                return;
+            }
+        };
+        let result = match snapshot {
+            ClipboardSnapshot::Text(s) => clipboard.set_text(s).map_err(|e| format!("set_text: {}", e)),
+            ClipboardSnapshot::Image(i) => clipboard.set_image(i).map_err(|e| format!("set_image: {}", e)),
+            ClipboardSnapshot::None => Ok(()),
+        };
+        if let Err(e) = result {
+            eprintln!("[clipboard] restore failed: {}", e);
+        }
     }
 }
 
@@ -187,10 +245,18 @@ mod linux {
         };
 
         for key in keys {
-            let out = std::process::Command::new("xdotool")
+            let out = match std::process::Command::new("xdotool")
                 .args(["key", "--clearmodifiers", key])
                 .output()
-                .map_err(|e| format!("Failed to run xdotool: {}", e))?;
+            {
+                Ok(o) => o,
+                // xdotool 未安装/不可执行：与退出非零一样降级到 enigo，
+                // 而不是让整个粘贴失败（xdotool 文档定位为可选依赖）
+                Err(e) => {
+                    eprintln!("[clipboard] xdotool unavailable ({}), falling back to enigo", e);
+                    return simulate_paste_enigo(method);
+                }
+            };
             if !out.status.success() {
                 let stderr = String::from_utf8_lossy(&out.stderr);
                 eprintln!("[clipboard] xdotool key '{}' failed ({}), falling back to enigo", key, stderr.trim());
@@ -267,11 +333,18 @@ mod linux {
             .map(|o| String::from_utf8_lossy(&o.stdout).to_lowercase())
             .unwrap_or_default();
 
-        // 获取窗口名
+        // 获取窗口名。注意 getwindowname 接受位置参数，不支持 --window 选项；
+        // 只在命令成功时采用输出，失败（无 xdotool 等）按空标题处理。
         let win_name = std::process::Command::new("xdotool")
-            .args(["getwindowname", "--window", &wid])
+            .args(["getwindowname", &wid])
             .output()
-            .map(|o| String::from_utf8_lossy(&o.stdout).to_lowercase())
+            .map(|o| {
+                if o.status.success() {
+                    String::from_utf8_lossy(&o.stdout).to_lowercase()
+                } else {
+                    String::new()
+                }
+            })
             .unwrap_or_default();
 
         classify_paste_method(&wm_class, &win_name)
@@ -405,13 +478,22 @@ pub fn paste_text(text: &str, overwrite_clipboard: bool) -> Result<(), String> {
         ClipboardSnapshot::None
     };
 
-    let mut clipboard = Clipboard::new()
-        .map_err(|e| format!("Failed to access clipboard: {}", e))?;
-    clipboard.set_text(text)
-        .map_err(|e| format!("Failed to write to clipboard: {}", e))?;
+    // Linux 经共享实例写入（X11 需要持续 owner）；macOS/Windows 用局部实例
+    #[cfg(target_os = "linux")]
+    let write_result = with_shared_clipboard(|clipboard| clipboard.set_text(text));
+    #[cfg(not(target_os = "linux"))]
+    let write_result = Clipboard::new()
+        .map_err(|e| format!("Failed to access clipboard: {}", e))
+        .and_then(|mut clipboard| {
+            clipboard
+                .set_text(text)
+                .map_err(|e| format!("Failed to write to clipboard: {}", e))
+        });
+    write_result?;
 
     // 先执行模拟粘贴，收集结果；任何失败都不再提前 return，
     // 以确保下方还原逻辑（保留原剪贴板模式）始终被执行。
+    #[cfg(not(target_os = "linux"))]
     let paste_result: Result<(), String> = (|| {
         #[cfg(target_os = "macos")]
         {
@@ -431,11 +513,11 @@ pub fn paste_text(text: &str, overwrite_clipboard: bool) -> Result<(), String> {
     })();
 
     #[cfg(target_os = "linux")]
-    {
+    let paste_result: Result<(), String> = {
         // 用 xclip 同步写入 CLIPBOARD + PRIMARY 选区，确保 Neovide/WPS 等
         // 应用能读到剪贴板内容（arboard 只写 CLIPBOARD，可能有同步问题）。
         if let Err(e) = linux::sync_clipboard_xclip(text) {
-            eprintln!("[clipboard] xclip sync failed: {}, arboard result will be used", e);
+            eprintln!("[clipboard] xclip sync failed: {}, shared arboard content will be used", e);
         }
         // 等剪贴板内容真正就绪再发粘贴键
         std::thread::sleep(std::time::Duration::from_millis(50));
@@ -451,7 +533,7 @@ pub fn paste_text(text: &str, overwrite_clipboard: bool) -> Result<(), String> {
             std::thread::sleep(std::time::Duration::from_millis(100));
         }
 
-        let paste_result = linux::simulate_paste();
+        let linux_paste = linux::simulate_paste();
 
         // 让目标应用先读完粘贴内容，再恢复 IME
         std::thread::sleep(std::time::Duration::from_millis(150));
@@ -462,8 +544,12 @@ pub fn paste_text(text: &str, overwrite_clipboard: bool) -> Result<(), String> {
             }
         }
 
-        paste_result?;
-    }
+        // 粘贴失败也不提前返回：下方还原逻辑必须执行，错误最后统一回报
+        if let Err(e) = &linux_paste {
+            eprintln!("[clipboard] linux paste failed: {}", e);
+        }
+        linux_paste
+    };
 
     // 仅当备份非 None 时才执行还原；让目标应用先读完粘贴内容。
     // 无论模拟粘贴成功或失败都执行还原，避免原剪贴板内容丢失。
