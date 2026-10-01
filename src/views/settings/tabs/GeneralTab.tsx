@@ -20,6 +20,7 @@ const DEFAULT_LABELS = {
 } as const
 
 const IS_MACOS = navigator.platform.toUpperCase().includes('MAC')
+const isLinux = navigator.userAgent.includes('Linux')
 
 function formatShortcutDisplay(combo: string): string {
   if (!IS_MACOS) return combo
@@ -563,6 +564,34 @@ export function GeneralTab({ config, onSave }: Props) {
           </SettingRow>
         )}
       </SettingGroup>
+
+      {/* Linux 专用：录音前后 hook */}
+      {isLinux && (
+        <SettingGroup title="录音前后钩子（Linux）">
+          <SettingRow
+            label="录音前钩子"
+            description="录音开始前执行的 shell 命令，如切换蓝牙耳机到 HFP profile"
+          >
+            <input
+              className="input input-wide"
+              value={config.advanced.preRecordHook}
+              onChange={e => updateAdvanced({ preRecordHook: e.target.value })}
+              placeholder="pactl set-card-profile bluez_card.XX handsfree_head_unit && pactl set-default-source bluez_source.XX.handsfree_head_unit"
+            />
+          </SettingRow>
+          <SettingRow
+            label="录音后钩子"
+            description="录音结束后执行的 shell 命令，如还原蓝牙耳机到 A2DP profile"
+          >
+            <input
+              className="input input-wide"
+              value={config.advanced.postRecordHook}
+              onChange={e => updateAdvanced({ postRecordHook: e.target.value })}
+              placeholder="pactl set-default-source alsa_input.XX && pactl set-card-profile bluez_card.XX a2dp_sink"
+            />
+          </SettingRow>
+        </SettingGroup>
+      )}
     </div>
   )
 }

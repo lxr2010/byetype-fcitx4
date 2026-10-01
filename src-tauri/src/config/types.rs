@@ -292,6 +292,14 @@ pub struct AdvancedConfig {
     #[serde(default = "default_true")]
     pub proxy_enabled: bool,
     pub proxy_url: String,
+    /// 录音开始前执行的 shell 命令（如切换蓝牙耳机到 HFP profile）。
+    /// 留空则不执行。仅 Linux 生效。
+    #[serde(default)]
+    pub pre_record_hook: String,
+    /// 录音结束后执行的 shell 命令（如还原蓝牙耳机到 A2DP profile）。
+    /// 留空则不执行。仅 Linux 生效。
+    #[serde(default)]
+    pub post_record_hook: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -409,6 +417,8 @@ impl Default for AppConfig {
                 max_parallel: 3,
                 proxy_enabled: true,
                 proxy_url: String::new(),
+                pre_record_hook: String::new(),
+                post_record_hook: String::new(),
             },
             backup: BackupConfig::default(),
         }

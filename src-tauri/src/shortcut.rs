@@ -132,12 +132,22 @@ fn handle_toggle_event(
         match recorder.stop() {
             Ok(base64_audio) => {
                 update_tray_icon(app_handle, false);
+                #[cfg(target_os = "linux")]
+                {
+                    let hook = &app_handle.state::<ConfigManager>().get().advanced.post_record_hook;
+                    crate::audio_switch::post_record(hook);
+                }
                 if let Some(tid) = task_id {
                     crate::task::process_recording(app_handle, tid, base64_audio, tmpl.to_string());
                 }
             }
             Err(e) => {
                 eprintln!("Stop recording error: {}", e);
+                #[cfg(target_os = "linux")]
+                {
+                    let hook = &app_handle.state::<ConfigManager>().get().advanced.post_record_hook;
+                    crate::audio_switch::post_record(hook);
+                }
                 if let Some(tid) = task_id {
                     crate::task::cancel_recording(app_handle, tid);
                 }
@@ -183,6 +193,11 @@ fn handle_ptt_event(
                 // Too short — discard recording, no transcription.
                 let _ = recorder.cancel();
                 update_tray_icon(app_handle, false);
+                #[cfg(target_os = "linux")]
+                {
+                    let hook = &app_handle.state::<ConfigManager>().get().advanced.post_record_hook;
+                    crate::audio_switch::post_record(hook);
+                }
                 if let Some(tid) = task_id {
                     crate::task::cancel_recording(app_handle, tid);
                 }
@@ -190,12 +205,22 @@ fn handle_ptt_event(
                 match recorder.stop() {
                     Ok(base64_audio) => {
                         update_tray_icon(app_handle, false);
+                        #[cfg(target_os = "linux")]
+                        {
+                            let hook = &app_handle.state::<ConfigManager>().get().advanced.post_record_hook;
+                            crate::audio_switch::post_record(hook);
+                        }
                         if let Some(tid) = task_id {
                             crate::task::process_recording(app_handle, tid, base64_audio, tmpl.to_string());
                         }
                     }
                     Err(e) => {
                         eprintln!("PTT stop recording error: {}", e);
+                        #[cfg(target_os = "linux")]
+                        {
+                            let hook = &app_handle.state::<ConfigManager>().get().advanced.post_record_hook;
+                            crate::audio_switch::post_record(hook);
+                        }
                         if let Some(tid) = task_id {
                             crate::task::cancel_recording(app_handle, tid);
                         }
@@ -226,7 +251,8 @@ fn start_voice_recording(
     // the race where Release loads a stale `gen` (the value from before this
     // Press) and its CAS succeeds with the wrong version, dropping the recording.
     let gen = recording_gen.fetch_add(1, Ordering::SeqCst) + 1;
-    let mic = app_handle.state::<ConfigManager>().get().general.microphone.clone();
+    let config = app_handle.state::<ConfigManager>().get();
+    let mic = config.general.microphone.clone();
     // Allocate the task_id and publish it BEFORE starting the recorder, so that
     // any Release event (or auto-stop timer) arriving between recorder.start()
     // returning Ok and the task_id being stored will still find a task_id in
@@ -242,6 +268,17 @@ fn start_voice_recording(
         }
     };
     *current_task_id.lock().unwrap() = Some(tid);
+
+    // Linux: 录音前执行用户配置的 pre-record hook（如切换蓝牙耳机到 HFP）
+    #[cfg(target_os = "linux")]
+    {
+        crate::audio_switch::pre_record(&config.advanced.pre_record_hook);
+        if !config.advanced.pre_record_hook.is_empty() {
+            // 等 hook 生效后再启动 recorder
+            std::thread::sleep(std::time::Duration::from_millis(200));
+        }
+    }
+
     match recorder.start(&mic) {
         Ok(()) => {
             update_tray_icon(app_handle, true);
@@ -285,12 +322,22 @@ fn start_voice_recording(
                         match t_recorder.stop() {
                             Ok(base64_audio) => {
                                 update_tray_icon(&t_app, false);
+                                #[cfg(target_os = "linux")]
+                                {
+                                    let hook = t_app.state::<ConfigManager>().get().advanced.post_record_hook.clone();
+                                    crate::audio_switch::post_record(&hook);
+                                }
                                 if let Some(tid) = task_id {
                                     crate::task::process_recording(&t_app, tid, base64_audio, t_tmpl.clone());
                                 }
                             }
                             Err(e) => {
                                 eprintln!("Auto-stop recording error: {}", e);
+                                #[cfg(target_os = "linux")]
+                                {
+                                    let hook = t_app.state::<ConfigManager>().get().advanced.post_record_hook.clone();
+                                    crate::audio_switch::post_record(&hook);
+                                }
                                 if let Some(tid) = task_id {
                                     crate::task::cancel_recording(&t_app, tid);
                                 }
@@ -347,6 +394,12 @@ fn update_tray_icon(app: &AppHandle, is_recording: bool) {
             include_bytes!("../icons/tray-default.png")
         };
         if let Ok(icon) = tauri::image::Image::from_bytes(icon_bytes) {
+            // Linux/GTK tray: 先设 None 清除旧图标，再设新图标，
+            // 否则某些 GTK 版本会把新旧图标叠加显示。
+            #[cfg(target_os = "linux")]
+            {
+                let _ = tray.set_icon(None);
+            }
             let _ = tray.set_icon(Some(icon));
         }
     }

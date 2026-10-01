@@ -111,6 +111,10 @@ export interface AdvancedConfig {
   maxParallel: number
   proxyEnabled: boolean
   proxyUrl: string
+  /** 录音前 hook（Linux，如切换蓝牙到 HFP） */
+  preRecordHook: string
+  /** 录音后 hook（Linux，如还原蓝牙到 A2DP） */
+  postRecordHook: string
 }
 
 export interface S3Config {
