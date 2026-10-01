@@ -165,6 +165,238 @@ mod windows {
     }
 }
 
+#[cfg(target_os = "linux")]
+mod linux {
+    use enigo::{Enigo, Keyboard, Settings, Key, Direction};
+
+    /// 用 xdotool 发送粘贴键，比 enigo 更可靠地走 XTest 扩展。
+    /// 根据焦点窗口类型选择粘贴方式：
+    /// - 终端：Ctrl+Shift+V（Ctrl+V 是 readline quoted-insert）
+    /// - Vim GUI（Neovide 等）：Ctrl+R 然后 +（insert 模式从 + 寄存器粘贴）
+    /// - 普通 GUI：Ctrl+V
+    ///
+    /// xdotool --clearmodifiers 会先释放用户正按着的修饰键，避免冲突。
+    pub fn simulate_paste() -> Result<(), String> {
+        let method = detect_paste_method();
+
+        let keys: &[&str] = match method {
+            PasteMethod::CtrlShiftV => &["ctrl+shift+v"],
+            PasteMethod::CtrlV => &["ctrl+v"],
+            // Neovim insert 模式：Ctrl+R 进入寄存器输入，+ 选择系统剪贴板寄存器
+            PasteMethod::VimPaste => &["ctrl+r", "plus"],
+        };
+
+        for key in keys {
+            let out = std::process::Command::new("xdotool")
+                .args(["key", "--clearmodifiers", key])
+                .output()
+                .map_err(|e| format!("Failed to run xdotool: {}", e))?;
+            if !out.status.success() {
+                let stderr = String::from_utf8_lossy(&out.stderr);
+                eprintln!("[clipboard] xdotool key '{}' failed ({}), falling back to enigo", key, stderr.trim());
+                return simulate_paste_enigo(method);
+            }
+            // VimPaste 的两步之间需要短暂延迟
+            if matches!(method, PasteMethod::VimPaste) {
+                std::thread::sleep(std::time::Duration::from_millis(30));
+            }
+        }
+        Ok(())
+    }
+
+    /// 焦点窗口的粘贴策略。
+    #[derive(Debug)]
+    enum PasteMethod {
+        /// Ctrl+Shift+V：终端
+        CtrlShiftV,
+        /// Ctrl+V：普通 GUI 应用（WPS、gedit 等）
+        CtrlV,
+        /// Neovim insert 模式粘贴指令：Ctrl+R 然后 +
+        VimPaste,
+    }
+
+    /// 按焦点窗口的 WM_CLASS 与窗口名选择粘贴方式。
+    /// 输入不要求预处理大小写：比较前统一转小写。
+    fn classify_paste_method(wm_class: &str, win_name: &str) -> PasteMethod {
+        let combined = format!("{} {}", wm_class, win_name).to_lowercase();
+
+        // Vim/Neovim GUI：Ctrl+V 是 visual-block，用 insert 模式指令
+        if combined.contains("neovide") || combined.contains("gvim")
+            || combined.contains("neovim-qt")
+        {
+            return PasteMethod::VimPaste;
+        }
+
+        // 终端模拟器：Ctrl+V 是 readline quoted-insert，用 Ctrl+Shift+V
+        if combined.contains("terminal") || combined.contains("alacritty")
+            || combined.contains("kitty") || combined.contains("konsole")
+            || combined.contains("xterm") || combined.contains("tmux")
+            || combined.contains("tilix") || combined.contains("guake")
+            || combined.contains("foot") || combined.contains("stterm")
+            || combined.contains("urxvt") || combined.contains("wezterm")
+            || combined.contains("gnome-terminal") || combined.contains("gnome_terminal")
+            || combined.contains("kgx") // GNOME Console
+            || combined.contains("deepin-terminal")
+            || combined.contains("terminator") || combined.contains("tilda")
+            || combined.contains("sakura") || combined.contains("lxterminal")
+            || combined.contains("qterminal") || combined.contains("mate-terminal")
+            || combined.contains("zap") // Zap Terminal (WM_CLASS: dev.zap.Zap)
+            || combined.contains("warp") // Warp Terminal (WM_CLASS: dev.warp.Warp)
+        {
+            return PasteMethod::CtrlShiftV;
+        }
+
+        PasteMethod::CtrlV
+    }
+
+    /// 检测焦点窗口并返回合适的粘贴方式。
+    fn detect_paste_method() -> PasteMethod {
+        // 获取焦点窗口 ID
+        let wid = match std::process::Command::new("xdotool")
+            .args(["getwindowfocus"])
+            .output()
+        {
+            Ok(o) if o.status.success() => String::from_utf8_lossy(&o.stdout).trim().to_string(),
+            _ => return PasteMethod::CtrlV,
+        };
+
+        // 用 xprop 获取 WM_CLASS（比窗口名更稳定）
+        let wm_class = std::process::Command::new("xprop")
+            .args(["-id", &wid, "WM_CLASS"])
+            .output()
+            .map(|o| String::from_utf8_lossy(&o.stdout).to_lowercase())
+            .unwrap_or_default();
+
+        // 获取窗口名
+        let win_name = std::process::Command::new("xdotool")
+            .args(["getwindowname", "--window", &wid])
+            .output()
+            .map(|o| String::from_utf8_lossy(&o.stdout).to_lowercase())
+            .unwrap_or_default();
+
+        classify_paste_method(&wm_class, &win_name)
+    }
+
+    fn simulate_paste_enigo(method: PasteMethod) -> Result<(), String> {
+        let mut enigo = Enigo::new(&Settings::default())
+            .map_err(|e| format!("Failed to create Enigo instance: {}", e))?;
+
+        match method {
+            PasteMethod::VimPaste => {
+                // Ctrl+R 然后 +：Neovim insert 模式从 + 寄存器粘贴
+                enigo.key(Key::Control, Direction::Press)
+                    .map_err(|e| format!("Failed to press Ctrl: {}", e))?;
+                enigo.key(Key::Unicode('r'), Direction::Press)
+                    .map_err(|e| format!("Failed to press R: {}", e))?;
+                enigo.key(Key::Unicode('r'), Direction::Release)
+                    .map_err(|e| format!("Failed to release R: {}", e))?;
+                enigo.key(Key::Control, Direction::Release)
+                    .map_err(|e| format!("Failed to release Ctrl: {}", e))?;
+                std::thread::sleep(std::time::Duration::from_millis(30));
+                enigo.key(Key::Unicode('+'), Direction::Press)
+                    .map_err(|e| format!("Failed to press +: {}", e))?;
+                enigo.key(Key::Unicode('+'), Direction::Release)
+                    .map_err(|e| format!("Failed to release +: {}", e))?;
+            }
+            PasteMethod::CtrlShiftV => {
+                enigo.key(Key::Control, Direction::Press)
+                    .map_err(|e| format!("Failed to press Ctrl: {}", e))?;
+                enigo.key(Key::Shift, Direction::Press)
+                    .map_err(|e| format!("Failed to press Shift: {}", e))?;
+                enigo.key(Key::Unicode('v'), Direction::Press)
+                    .map_err(|e| format!("Failed to press V: {}", e))?;
+                enigo.key(Key::Unicode('v'), Direction::Release)
+                    .map_err(|e| format!("Failed to release V: {}", e))?;
+                enigo.key(Key::Shift, Direction::Release)
+                    .map_err(|e| format!("Failed to release Shift: {}", e))?;
+                enigo.key(Key::Control, Direction::Release)
+                    .map_err(|e| format!("Failed to release Ctrl: {}", e))?;
+            }
+            PasteMethod::CtrlV => {
+                enigo.key(Key::Control, Direction::Press)
+                    .map_err(|e| format!("Failed to press Ctrl: {}", e))?;
+                enigo.key(Key::Unicode('v'), Direction::Press)
+                    .map_err(|e| format!("Failed to press V: {}", e))?;
+                enigo.key(Key::Unicode('v'), Direction::Release)
+                    .map_err(|e| format!("Failed to release V: {}", e))?;
+                enigo.key(Key::Control, Direction::Release)
+                    .map_err(|e| format!("Failed to release Ctrl: {}", e))?;
+            }
+        }
+
+        Ok(())
+    }
+
+    /// 用 xclip 同时写入 CLIPBOARD 和 PRIMARY 选区，确保所有 X11 应用都能读到。
+    /// arboard 只写 CLIPBOARD，某些应用（Neovide、WPS）可能读 PRIMARY 或有同步问题。
+    pub fn sync_clipboard_xclip(text: &str) -> Result<(), String> {
+        use std::io::Write;
+        // CLIPBOARD 选区（Ctrl+V/Ctrl+Shift+V 粘贴用）
+        let mut child = std::process::Command::new("xclip")
+            .args(["-selection", "clipboard"])
+            .stdin(std::process::Stdio::piped())
+            .spawn()
+            .map_err(|e| format!("Failed to spawn xclip (clipboard): {}", e))?;
+        if let Some(mut stdin) = child.stdin.take() {
+            let _ = stdin.write_all(text.as_bytes());
+        }
+        let _ = child.wait();
+
+        // PRIMARY 选区（中键粘贴用，部分应用读这个）
+        let mut child = std::process::Command::new("xclip")
+            .args(["-selection", "primary"])
+            .stdin(std::process::Stdio::piped())
+            .spawn()
+            .map_err(|e| format!("Failed to spawn xclip (primary): {}", e))?;
+        if let Some(mut stdin) = child.stdin.take() {
+            let _ = stdin.write_all(text.as_bytes());
+        }
+        let _ = child.wait();
+
+        Ok(())
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        #[test]
+        fn vim_gui_uses_register_paste() {
+            assert!(matches!(classify_paste_method("neovide", ""), PasteMethod::VimPaste));
+            assert!(matches!(classify_paste_method("", "GVim"), PasteMethod::VimPaste));
+            assert!(matches!(classify_paste_method("neovim-qt", ""), PasteMethod::VimPaste));
+        }
+
+        #[test]
+        fn terminals_use_ctrl_shift_v() {
+            for class in [
+                "Alacritty", "gnome-terminal-server", "kitty", "konsole",
+                "dev.zap.Zap", "dev.warp.Warp", "org.wezfurlong.wezterm",
+            ] {
+                assert!(
+                    matches!(classify_paste_method(class, ""), PasteMethod::CtrlShiftV),
+                    "expected terminal class {class} to use Ctrl+Shift+V"
+                );
+            }
+        }
+
+        #[test]
+        fn normal_gui_uses_ctrl_v() {
+            assert!(matches!(classify_paste_method("firefox", "Mozilla Firefox"), PasteMethod::CtrlV));
+            assert!(matches!(classify_paste_method("", ""), PasteMethod::CtrlV));
+        }
+
+        #[test]
+        fn wm_class_and_window_name_are_combined() {
+            // WM_CLASS 不是终端，但窗口名包含终端标识（tmux 会话标题等）
+            assert!(matches!(
+                classify_paste_method("org.gnome.Nautilus", "user@host: ~/tmux"),
+                PasteMethod::CtrlShiftV
+            ));
+        }
+    }
+}
+
 pub fn paste_text(text: &str, overwrite_clipboard: bool) -> Result<(), String> {
     // OFF 模式：先快照原剪贴板，主流程结束后还原。
     let backup = if !overwrite_clipboard {
@@ -197,6 +429,41 @@ pub fn paste_text(text: &str, overwrite_clipboard: bool) -> Result<(), String> {
 
         Ok(())
     })();
+
+    #[cfg(target_os = "linux")]
+    {
+        // 用 xclip 同步写入 CLIPBOARD + PRIMARY 选区，确保 Neovide/WPS 等
+        // 应用能读到剪贴板内容（arboard 只写 CLIPBOARD，可能有同步问题）。
+        if let Err(e) = linux::sync_clipboard_xclip(text) {
+            eprintln!("[clipboard] xclip sync failed: {}, arboard result will be used", e);
+        }
+        // 等剪贴板内容真正就绪再发粘贴键
+        std::thread::sleep(std::time::Duration::from_millis(50));
+
+        // Fcitx4 感知：粘贴前若 IME 激活则临时停用，避免拼音候选窗口拦截
+        // 或与正在进行的候选状态冲突；粘贴后再恢复。
+        let was_active = matches!(crate::fcitx::detect(), crate::fcitx::FcitxState::Active);
+        if was_active {
+            if let Err(e) = crate::fcitx::deactivate() {
+                eprintln!("[clipboard] fcitx deactivate failed: {}", e);
+            }
+            // 等 Fcitx 真正释放键盘拦截再发粘贴键
+            std::thread::sleep(std::time::Duration::from_millis(100));
+        }
+
+        let paste_result = linux::simulate_paste();
+
+        // 让目标应用先读完粘贴内容，再恢复 IME
+        std::thread::sleep(std::time::Duration::from_millis(150));
+
+        if was_active {
+            if let Err(e) = crate::fcitx::reactivate() {
+                eprintln!("[clipboard] fcitx reactivate failed: {}", e);
+            }
+        }
+
+        paste_result?;
+    }
 
     // 仅当备份非 None 时才执行还原；让目标应用先读完粘贴内容。
     // 无论模拟粘贴成功或失败都执行还原，避免原剪贴板内容丢失。
