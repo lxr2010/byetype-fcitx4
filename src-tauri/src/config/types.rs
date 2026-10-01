@@ -292,6 +292,11 @@ pub struct AdvancedConfig {
     #[serde(default = "default_true")]
     pub proxy_enabled: bool,
     pub proxy_url: String,
+    /// 录音时自动切换蓝牙耳机到录音 profile（HFP），结束后恢复原 profile
+    /// 与默认录音设备。`"auto"`（默认）开启，`"off"` 关闭。
+    /// 仅 Linux 生效；无蓝牙设备或 pactl 缺失时自动跳过。
+    #[serde(default = "default_bluetooth_switch")]
+    pub bluetooth_switch: String,
     /// 录音开始前执行的 shell 命令（如切换蓝牙耳机到 HFP profile）。
     /// 留空则不执行。仅 Linux 生效。
     #[serde(default)]
@@ -300,6 +305,11 @@ pub struct AdvancedConfig {
     /// 留空则不执行。仅 Linux 生效。
     #[serde(default)]
     pub post_record_hook: String,
+}
+
+/// 蓝牙 profile 自动开关默认值。
+fn default_bluetooth_switch() -> String {
+    "auto".to_string()
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -417,6 +427,7 @@ impl Default for AppConfig {
                 max_parallel: 3,
                 proxy_enabled: true,
                 proxy_url: String::new(),
+                bluetooth_switch: default_bluetooth_switch(),
                 pre_record_hook: String::new(),
                 post_record_hook: String::new(),
             },

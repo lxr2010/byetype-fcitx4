@@ -111,6 +111,8 @@ export interface AdvancedConfig {
   maxParallel: number
   proxyEnabled: boolean
   proxyUrl: string
+  /** 录音时自动切换蓝牙耳机 profile（Linux）：'auto' | 'off' */
+  bluetoothSwitch: string
   /** 录音前 hook（Linux，如切换蓝牙到 HFP） */
   preRecordHook: string
   /** 录音后 hook（Linux，如还原蓝牙到 A2DP） */
