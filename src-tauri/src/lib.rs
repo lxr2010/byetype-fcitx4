@@ -14,6 +14,8 @@ mod local_api;
 mod learning;
 mod usage;
 mod timing;
+#[cfg(target_os = "linux")]
+mod fcitx;
 #[cfg(target_os = "windows")]
 mod screenshot_win32;
 
