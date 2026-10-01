@@ -19,7 +19,7 @@ jobs:
             args: '--target x86_64-apple-darwin'
           - platform: windows-latest
             args: ''
-          - platform: ubuntu-latest
+          - platform: ubuntu-22.04
             args: ''
 
     runs-on: ${{ matrix.platform }}
@@ -58,7 +58,7 @@ jobs:
           targets: ${{ matrix.platform == 'macos-latest' && 'aarch64-apple-darwin,x86_64-apple-darwin' || '' }}
 
       - name: Install Linux dependencies
-        if: matrix.platform == 'ubuntu-latest'
+        if: matrix.platform == 'ubuntu-22.04'
         run: |
           sudo apt-get update
           sudo apt-get install -y \
@@ -144,7 +144,7 @@ jobs:
             SUFFIX="macos-aarch64"
           elif [[ "${{ matrix.args }}" == *"x86_64"* ]]; then
             SUFFIX="macos-x86_64"
-          elif [[ "${{ matrix.platform }}" == "ubuntu-latest" ]]; then
+          elif [[ "${{ matrix.platform }}" == "ubuntu-22.04" ]]; then
             SUFFIX="linux-x86_64"
           else
             SUFFIX="windows-x86_64"
