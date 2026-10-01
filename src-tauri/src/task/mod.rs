@@ -823,6 +823,11 @@ async fn capture_screenshot(app: &AppHandle, task_id: u32) -> Option<String> {
         return capture_screenshot_windows(app, task_id).await;
     }
 
+    #[cfg(target_os = "linux")]
+    {
+        return capture_screenshot_linux(app, task_id).await;
+    }
+
     #[allow(unreachable_code)]
     {
         eprintln!("[TaskManager] Screenshot not supported on this platform");
@@ -1000,6 +1005,89 @@ async fn capture_screenshot_windows(app: &AppHandle, task_id: u32) -> Option<Str
 
     let result = base64::engine::general_purpose::STANDARD.encode(&png_buf);
     Some(result)
+}
+
+#[cfg(target_os = "linux")]
+async fn capture_screenshot_linux(app: &AppHandle, task_id: u32) -> Option<String> {
+    // X11 为主：maim -s 自带交互式选区，等价 macOS screencapture -i
+    // Wayland 兜底：grim -g "$(slurp)" —— slurp 选区、grim 截图
+    let tmp_path = std::env::temp_dir().join(format!("byetype_capture_{}.png", task_id));
+
+    let session_type = std::env::var("XDG_SESSION_TYPE").unwrap_or_default();
+    let is_wayland = session_type == "wayland";
+
+    let capture_result = if is_wayland {
+        // Wayland: slurp 输出 "x,y wxh"，喂给 grim -g
+        let slurp = tokio::process::Command::new("slurp")
+            .output()
+            .await;
+        let region = match slurp {
+            Ok(o) if o.status.success() => String::from_utf8_lossy(&o.stdout).trim().to_string(),
+            _ => String::new(),
+        };
+        if region.is_empty() {
+            // 用户取消或 slurp 不可用
+            let _ = std::fs::remove_file(&tmp_path);
+            let state = app.state::<SharedTaskManager>();
+            let mut mgr = state.lock().unwrap();
+            mgr.cancel_tokens.remove(&task_id);
+            mgr.active_count = mgr.active_count.saturating_sub(1);
+            return None;
+        }
+        tokio::process::Command::new("grim")
+            .arg("-g").arg(&region)
+            .arg(tmp_path.as_os_str())
+            .output()
+            .await
+    } else {
+        // X11: maim -s 让用户框选，直接输出到文件
+        tokio::process::Command::new("maim")
+            .arg("-s")
+            .arg(tmp_path.as_os_str())
+            .output()
+            .await
+    };
+
+    let exited_ok = match &capture_result {
+        Ok(output) => {
+            if !output.stderr.is_empty() {
+                let stderr = String::from_utf8_lossy(&output.stderr);
+                let trimmed = stderr.trim();
+                if !trimmed.is_empty() {
+                    eprintln!("[TaskManager] screenshot stderr: {}", trimmed);
+                }
+            }
+            output.status.success()
+        }
+        Err(e) => {
+            eprintln!("[TaskManager] screenshot tool failed to launch: {}", e);
+            false
+        }
+    };
+
+    if !exited_ok || !tmp_path.exists() {
+        let _ = std::fs::remove_file(&tmp_path);
+        let state = app.state::<SharedTaskManager>();
+        let mut mgr = state.lock().unwrap();
+        mgr.cancel_tokens.remove(&task_id);
+        mgr.active_count = mgr.active_count.saturating_sub(1);
+        return None;
+    }
+
+    let png_bytes = match std::fs::read(&tmp_path) {
+        Ok(b) => b,
+        Err(e) => {
+            eprintln!("[TaskManager] Failed to read screenshot: {}", e);
+            let _ = std::fs::remove_file(&tmp_path);
+            finish_extract_pipeline(
+                app, task_id, None, None, "failed",
+                Some(format!("Failed to read screenshot: {}", e)),
+            );
+            return None;
+        }
+    };
+    let _ = std::fs::remove_file(&tmp_path);
+    Some(base64::engine::general_purpose::STANDARD.encode(&png_bytes))
 }
 
 #[cfg(target_os = "windows")]
