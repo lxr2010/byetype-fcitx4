@@ -269,11 +269,12 @@ fn start_voice_recording(
     };
     *current_task_id.lock().unwrap() = Some(tid);
 
-    // Linux: 蓝牙 profile 自动切换（默认开启；无蓝牙设备时内部直接跳过，
-    // 就绪等待通过轮询 pactl 完成，超时自动还原不阻断录音）
+    // Linux: 蓝牙 profile 自动切换（默认开启；无蓝牙设备或用户明确选择了
+    // 非蓝牙麦克风时内部直接跳过，就绪等待通过轮询 pactl 完成，
+    // 超时自动还原不阻断录音）
     #[cfg(target_os = "linux")]
     if config.advanced.bluetooth_switch == "auto" {
-        if let Some(source) = crate::audio_switch::prepare_bluetooth_recording() {
+        if let Some(source) = crate::audio_switch::prepare_bluetooth_recording(&mic) {
             eprintln!("[audio_switch] recording via bluetooth source: {}", source);
         }
     }
@@ -370,6 +371,13 @@ fn start_voice_recording(
             // recording, and cancel the task to release its slot/bubble.
             *current_task_id.lock().unwrap() = None;
             crate::task::cancel_recording(app_handle, tid);
+            // 打开音频流失败同样要收尾：蓝牙可能已切到 HFP、默认输入被临时
+            // 改写、post hook 约定要执行 —— 与其他结束路径一致。
+            #[cfg(target_os = "linux")]
+            {
+                let hook = app_handle.state::<ConfigManager>().get().advanced.post_record_hook.clone();
+                crate::audio_switch::finish_recording(&hook);
+            }
             eprintln!("Start recording error: {}", e);
             let _ = app_handle.emit("recording-error", serde_json::json!({
                 "message": e
