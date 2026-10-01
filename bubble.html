@@ -106,6 +106,12 @@
       50%  { background-position: 100% 50%; }
       100% { background-position: 0% 50%; }
     }
+
+    /* Linux/WebKitGTK: 透明窗口下动画会导致边界渲染异常，禁用所有动画 */
+    body.no-anim .shape {
+      animation: none !important;
+    }
+
   </style>
 </head>
 <body>

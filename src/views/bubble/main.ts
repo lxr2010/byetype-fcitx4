@@ -5,6 +5,11 @@ const bubble = document.getElementById('bubble')!
 const currentWindow = getCurrentWindow()
 let currentTaskId: number = 0
 
+// Linux/WebKitGTK: 透明窗口下动画会导致边界渲染异常，禁用动画
+if (navigator.userAgent.includes('Linux')) {
+  document.body.classList.add('no-anim')
+}
+
 type Look = {
   shape: 'is-round' | 'is-pill'
   color: string

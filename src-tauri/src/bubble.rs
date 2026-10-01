@@ -21,6 +21,38 @@ fn gen_index(task_id: u32) -> usize {
     (slot as usize).saturating_sub(1)
 }
 
+/// 解析 `xdotool getmouselocation` 的输出（"x:N y:N screen:N window:N"）。
+/// 坐标以物理像素为单位，token 顺序不保证，缺失或非法时返回 None。
+#[cfg(target_os = "linux")]
+pub(crate) fn parse_xdotool_location(s: &str) -> Option<(f64, f64)> {
+    let mut x: Option<f64> = None;
+    let mut y: Option<f64> = None;
+    for token in s.split_whitespace() {
+        if let Some(rest) = token.strip_prefix("x:") {
+            x = rest.parse::<f64>().ok();
+        } else if let Some(rest) = token.strip_prefix("y:") {
+            y = rest.parse::<f64>().ok();
+        }
+    }
+    match (x, y) {
+        (Some(x), Some(y)) => Some((x, y)),
+        _ => None,
+    }
+}
+
+/// 查询 X11 光标位置（物理像素）。xdotool 未安装或失败时返回 None。
+#[cfg(target_os = "linux")]
+pub(crate) fn x11_cursor() -> Option<(f64, f64)> {
+    let out = std::process::Command::new("xdotool")
+        .arg("getmouselocation")
+        .output()
+        .ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    parse_xdotool_location(&String::from_utf8_lossy(&out.stdout))
+}
+
 fn cursor_position() -> (f64, f64) {
     #[cfg(target_os = "macos")]
     {
@@ -41,6 +73,14 @@ fn cursor_position() -> (f64, f64) {
         let mut point = POINT { x: 0, y: 0 };
         if unsafe { GetCursorPos(&mut point) } != 0 {
             return (point.x as f64, point.y as f64);
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    {
+        // X11: xdotool 输出物理像素坐标，与 Tauri Monitor API 同坐标系
+        if let Some((x, y)) = x11_cursor() {
+            return (x, y);
         }
     }
 
@@ -153,6 +193,7 @@ pub fn update(app: &AppHandle, task_id: u32, status: &str) -> Result<(), String>
 /// 坐标系约定:
 /// - macOS: 光标 (CGEvent) 与 Monitor API 都用逻辑点 → LogicalPosition。
 /// - Windows: 光标 (GetCursorPos) 与 Monitor API 都用物理像素 → PhysicalPosition。
+/// - Linux: 光标 (xdotool) 与 Monitor API 都用物理像素 → PhysicalPosition。
 fn position_near_cursor(win: &WebviewWindow, cx: f64, cy: f64) {
     let monitors = match win.available_monitors() {
         Ok(m) if !m.is_empty() => m,
@@ -217,7 +258,34 @@ fn position_near_cursor(win: &WebviewWindow, cx: f64, cy: f64) {
         ));
     }
 
-    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+    #[cfg(target_os = "linux")]
+    {
+        // X11: xdotool 光标与 Tauri Monitor API 都用物理像素,与 Windows 分支同构。
+        let monitor = monitors.iter().find(|m| {
+            let pos = m.position();
+            let size = m.size();
+            cx >= pos.x as f64
+                && cx < (pos.x + size.width as i32) as f64
+                && cy >= pos.y as f64
+                && cy < (pos.y + size.height as i32) as f64
+        }).unwrap_or(&monitors[0]);
+        let s = monitor.scale_factor();
+        let pw = BUBBLE_WIDTH * s;
+        let ph = BUBBLE_HEIGHT * s;
+        let l = monitor.position().x as f64;
+        let t = monitor.position().y as f64;
+        let r = l + monitor.size().width as f64;
+        let b = t + monitor.size().height as f64;
+        let off_x = OFFSET_X * s;
+        let off_y = OFFSET_Y * s;
+
+        let (x, y) = pick_pos(cx, cy, pw, ph, l, t, r, b, off_x, off_y);
+        let _ = win.set_position(tauri::Position::Physical(
+            tauri::PhysicalPosition::new(x as i32, y as i32),
+        ));
+    }
+
+    #[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "linux")))]
     {
         let _ = win.set_position(tauri::Position::Logical(
             tauri::LogicalPosition::new(cx + OFFSET_X, cy + OFFSET_Y),
@@ -269,4 +337,37 @@ pub fn hide(app: &AppHandle, task_id: u32, delay_ms: u64) -> Result<(), String> 
         }
     });
     Ok(())
+}
+
+#[cfg(all(test, target_os = "linux"))]
+mod tests {
+    use super::parse_xdotool_location;
+
+    #[test]
+    fn parses_standard_output() {
+        assert_eq!(
+            parse_xdotool_location("x:100 y:200 screen:0 window:123"),
+            Some((100.0, 200.0))
+        );
+    }
+
+    #[test]
+    fn parses_out_of_order_tokens() {
+        assert_eq!(parse_xdotool_location("window:99 y:42 x:7"), Some((7.0, 42.0)));
+    }
+
+    #[test]
+    fn missing_axis_is_none() {
+        assert_eq!(parse_xdotool_location("x:100 screen:0"), None);
+    }
+
+    #[test]
+    fn non_numeric_axis_is_none() {
+        assert_eq!(parse_xdotool_location("x:abc y:200"), None);
+    }
+
+    #[test]
+    fn empty_input_is_none() {
+        assert_eq!(parse_xdotool_location(""), None);
+    }
 }

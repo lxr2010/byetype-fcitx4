@@ -313,6 +313,7 @@ pub fn close_if_exists(app: &AppHandle) {
 /// 坐标系约定:
 /// - macOS: 光标 (CGEvent) 与 Monitor API 都用逻辑点,直接走 LogicalPosition。
 /// - Windows: 光标 (GetCursorPos) 与 Monitor API 都用物理像素,走 PhysicalPosition。
+/// - Linux: 光标 (xdotool) 与 Monitor API 都用物理像素,走 PhysicalPosition。
 /// 全程不做平台间换算,避免 DPI 误差。
 fn position_near_cursor(window: &tauri::WebviewWindow, width: f64, height: f64) {
     let monitors = match window.available_monitors() {
@@ -379,7 +380,38 @@ fn position_near_cursor(window: &tauri::WebviewWindow, width: f64, height: f64) 
         ));
     }
 
-    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+    #[cfg(target_os = "linux")]
+    {
+        let cursor = match crate::bubble::x11_cursor() {
+            Some(c) => c,
+            None => { let _ = window.center(); return; }
+        };
+        // X11: xdotool 光标与 Tauri Monitor API 都用物理像素,与 Windows 分支同构。
+        let monitor = monitors.iter().find(|m| {
+            let pos = m.position();
+            let size = m.size();
+            cursor.0 >= pos.x as f64
+                && cursor.0 < (pos.x + size.width as i32) as f64
+                && cursor.1 >= pos.y as f64
+                && cursor.1 < (pos.y + size.height as i32) as f64
+        }).unwrap_or(&monitors[0]);
+
+        let s = monitor.scale_factor();
+        let pw = width * s;
+        let ph = height * s;
+        let l = monitor.position().x as f64;
+        let t = monitor.position().y as f64;
+        let r = l + monitor.size().width as f64;
+        let b = t + monitor.size().height as f64;
+        let offset = CURSOR_OFFSET * s;
+
+        let (x, y) = pick_pos(cursor.0, cursor.1, pw, ph, l, t, r, b, offset);
+        let _ = window.set_position(tauri::Position::Physical(
+            tauri::PhysicalPosition::new(x as i32, y as i32),
+        ));
+    }
+
+    #[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "linux")))]
     {
         let _ = window.center();
     }
