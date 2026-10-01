@@ -19,6 +19,8 @@ jobs:
             args: '--target x86_64-apple-darwin'
           - platform: windows-latest
             args: ''
+          - platform: ubuntu-latest
+            args: ''
 
     runs-on: ${{ matrix.platform }}
 
@@ -54,6 +56,17 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
         with:
           targets: ${{ matrix.platform == 'macos-latest' && 'aarch64-apple-darwin,x86_64-apple-darwin' || '' }}
+
+      - name: Install Linux dependencies
+        if: matrix.platform == 'ubuntu-latest'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev libgtk-3-dev libayatana-appindicator3-dev \
+            libasound2-dev libxdo-dev libxtst-dev libx11-dev librsvg2-dev \
+            file
+          # AppImage 打包需要 FUSE；24.04 起包名从 libfuse2 改为 libfuse2t64
+          sudo apt-get install -y libfuse2 || sudo apt-get install -y libfuse2t64
 
       - name: Install dependencies
         run: npm ci
@@ -131,6 +144,8 @@ jobs:
             SUFFIX="macos-aarch64"
           elif [[ "${{ matrix.args }}" == *"x86_64"* ]]; then
             SUFFIX="macos-x86_64"
+          elif [[ "${{ matrix.platform }}" == "ubuntu-latest" ]]; then
+            SUFFIX="linux-x86_64"
           else
             SUFFIX="windows-x86_64"
           fi
