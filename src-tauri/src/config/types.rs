@@ -335,11 +335,20 @@ pub struct BackupConfig {
     pub s3: S3Config,
 }
 
+/// Linux 上 F4 是 Fcitx4 默认的"切换输入法"键，会与录音快捷键冲突，改用 F8。
+/// macOS/Windows 保持 F4。
+fn default_voice_shortcut() -> String {
+    #[cfg(target_os = "linux")]
+    { "F8".to_string() }
+    #[cfg(not(target_os = "linux"))]
+    { "F4".to_string() }
+}
+
 impl Default for AppConfig {
     fn default() -> Self {
         Self {
             general: GeneralConfig {
-                shortcut: "F4".to_string(),
+                shortcut: default_voice_shortcut(),
                 launch_at_login: false,
                 theme: "system".to_string(),
                 max_recording_seconds: 180,
