@@ -67,6 +67,11 @@
         ]
       }
     },
+    "linux": {
+      "deb": {
+        "depends": ["libxdo3", "xdotool", "maim"]
+      }
+    },
     "publisher": "ByeType",
     "category": "Utility",
     "shortDescription": "Markdown-driven voice input powered by AI"
