@@ -65,15 +65,26 @@ Linux 上默认语音快捷键为 **F8**（不是 macOS/Windows 的 F4），因�
 - **ALSA 独占**：cpal 默认走 ALSA，可能独占录音设备。若需与其他录音软件并行，后续可加 `pulseaudio` / `jack` feature。
 - **Bubble 残影**：WebKitGTK 透明窗口不清除旧像素，状态切换时旧元素残影可能残留（如 "Thinking..." 文字被绿点覆盖后仍有残影）。第二次录音时干净。hide/show 可清除但闪烁明显，已禁用。
 
-## 录音前后钩子（蓝牙耳机 profile 切换）
+## 蓝牙耳机录音（profile 自动切换）
 
-蓝牙耳机在 A2DP profile 下音质好但没有麦克风，HFP/HSP profile 下有麦克风但音质差。通过 `preRecordHook` 和 `postRecordHook` 配置项可在录音前自动切换到 HFP，录音后还原 A2DP。
+蓝牙耳机在 A2DP profile 下音质好但没有麦克风，HFP/HSP profile 下有麦克风但音质差。macOS/Windows 由系统在应用录音时自动切换 profile，Linux 则把策略留给应用，因此 ByeType 内置了自动切换：
 
-在设置页 → 网络与性能 → "录音前后钩子（Linux）" 中配置，或直接编辑 config.json 的 `advanced` 部分：
+**自动模式（默认，推荐）**：设置页 → 网络与性能 → 「自动切换蓝牙麦克风」保持开启即可，或编辑 config.json：
+
+```json
+{ "advanced": { "bluetoothSwitch": "auto" } }
+```
+
+录音时自动完成：发现蓝牙声卡 → 暂存当前 profile 与默认录音设备 → 切到录音 profile（优先保音质的 `a2dp_sink_hfp_hf`，其次 `handsfree_head_unit` / `headset_head_unit`）→ 轮询等录音设备就绪（上限 1.5 秒，超时自动还原、按原麦克风录音）→ 临时设为默认录音设备。录音结束（含取消/出错/退出应用）自动恢复原状。应用录音走 system-default 设备（cpal 在 ALSA 层，看不到 PipeWire 的蓝牙虚拟 source）。
+
+无蓝牙耳机、未安装 `pactl`（`pulseaudio-utils` 包）时静默跳过，零开销。3.5mm/USB 麦克风是常驻设备，不经过此流程，在「麦克风」设置里直接选择即可。
+
+**自定义钩子（高级）**：需要接管其他设备状态时，用 `preRecordHook` / `postRecordHook` 在录音前后执行任意 shell 命令（自动切换关闭时也可单独使用）：
 
 ```json
 {
   "advanced": {
+    "bluetoothSwitch": "off",
     "preRecordHook": "pactl set-card-profile bluez_card.88_92_CC_E7_A4_48 handsfree_head_unit && pactl set-default-source bluez_source.88_92_CC_E7_A4_48.handsfree_head_unit",
     "postRecordHook": "pactl set-default-source alsa_input.pci-0000_00_1f.3.analog-stereo && pactl set-card-profile bluez_card.88_92_CC_E7_A4_48 a2dp_sink"
   }
@@ -88,4 +99,4 @@ pactl list cards | grep -A5 'bluez' | grep Profiles        # 确认有 handsfree
 pactl list sources short | grep handsfree                  # 找 HFP source 名
 ```
 
-留空则不执行任何 hook。非 Linux 平台自动忽略。
+hook 留空则不执行。非 Linux 平台自动忽略。

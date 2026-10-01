@@ -567,10 +567,19 @@ export function GeneralTab({ config, onSave }: Props) {
 
       {/* Linux 专用：录音前后 hook */}
       {isLinux && (
-        <SettingGroup title="录音前后钩子（Linux）">
+        <SettingGroup title="录音音频（Linux）">
           <SettingRow
-            label="录音前钩子"
-            description="录音开始前执行的 shell 命令，如切换蓝牙耳机到 HFP profile"
+            label="自动切换蓝牙麦克风"
+            description="录音时自动把蓝牙耳机切到录音 profile 并临时设为默认麦克风，结束后恢复原音质与原默认设备；无蓝牙设备或未安装 pactl 时自动跳过"
+          >
+            <Toggle
+              checked={config.advanced.bluetoothSwitch !== 'off'}
+              onChange={checked => updateAdvanced({ bluetoothSwitch: checked ? 'auto' : 'off' })}
+            />
+          </SettingRow>
+          <SettingRow
+            label="录音前钩子（高级）"
+            description="录音开始前执行的 shell 命令。一般无需配置：蓝牙耳机用上方自动切换即可，此钩子供自定义设备切换等特殊场景"
           >
             <input
               className="input input-wide"
@@ -580,8 +589,8 @@ export function GeneralTab({ config, onSave }: Props) {
             />
           </SettingRow>
           <SettingRow
-            label="录音后钩子"
-            description="录音结束后执行的 shell 命令，如还原蓝牙耳机到 A2DP profile"
+            label="录音后钩子（高级）"
+            description="录音结束后执行的 shell 命令，如还原自动切换未覆盖的设备状态"
           >
             <input
               className="input input-wide"
