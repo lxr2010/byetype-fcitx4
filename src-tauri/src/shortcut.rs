@@ -135,7 +135,7 @@ fn handle_toggle_event(
                 #[cfg(target_os = "linux")]
                 {
                     let hook = &app_handle.state::<ConfigManager>().get().advanced.post_record_hook;
-                    crate::audio_switch::post_record(hook);
+                    crate::audio_switch::finish_recording(hook);
                 }
                 if let Some(tid) = task_id {
                     crate::task::process_recording(app_handle, tid, base64_audio, tmpl.to_string());
@@ -146,7 +146,7 @@ fn handle_toggle_event(
                 #[cfg(target_os = "linux")]
                 {
                     let hook = &app_handle.state::<ConfigManager>().get().advanced.post_record_hook;
-                    crate::audio_switch::post_record(hook);
+                    crate::audio_switch::finish_recording(hook);
                 }
                 if let Some(tid) = task_id {
                     crate::task::cancel_recording(app_handle, tid);
@@ -196,7 +196,7 @@ fn handle_ptt_event(
                 #[cfg(target_os = "linux")]
                 {
                     let hook = &app_handle.state::<ConfigManager>().get().advanced.post_record_hook;
-                    crate::audio_switch::post_record(hook);
+                    crate::audio_switch::finish_recording(hook);
                 }
                 if let Some(tid) = task_id {
                     crate::task::cancel_recording(app_handle, tid);
@@ -208,7 +208,7 @@ fn handle_ptt_event(
                         #[cfg(target_os = "linux")]
                         {
                             let hook = &app_handle.state::<ConfigManager>().get().advanced.post_record_hook;
-                            crate::audio_switch::post_record(hook);
+                            crate::audio_switch::finish_recording(hook);
                         }
                         if let Some(tid) = task_id {
                             crate::task::process_recording(app_handle, tid, base64_audio, tmpl.to_string());
@@ -219,7 +219,7 @@ fn handle_ptt_event(
                         #[cfg(target_os = "linux")]
                         {
                             let hook = &app_handle.state::<ConfigManager>().get().advanced.post_record_hook;
-                            crate::audio_switch::post_record(hook);
+                            crate::audio_switch::finish_recording(hook);
                         }
                         if let Some(tid) = task_id {
                             crate::task::cancel_recording(app_handle, tid);
@@ -269,7 +269,16 @@ fn start_voice_recording(
     };
     *current_task_id.lock().unwrap() = Some(tid);
 
-    // Linux: 录音前执行用户配置的 pre-record hook（如切换蓝牙耳机到 HFP）
+    // Linux: 蓝牙 profile 自动切换（默认开启；无蓝牙设备时内部直接跳过，
+    // 就绪等待通过轮询 pactl 完成，超时自动还原不阻断录音）
+    #[cfg(target_os = "linux")]
+    if config.advanced.bluetooth_switch == "auto" {
+        if let Some(source) = crate::audio_switch::prepare_bluetooth_recording() {
+            eprintln!("[audio_switch] recording via bluetooth source: {}", source);
+        }
+    }
+
+    // Linux: 录音前执行用户配置的 pre-record hook（如自定义设备切换）
     #[cfg(target_os = "linux")]
     {
         crate::audio_switch::pre_record(&config.advanced.pre_record_hook);
@@ -325,7 +334,7 @@ fn start_voice_recording(
                                 #[cfg(target_os = "linux")]
                                 {
                                     let hook = t_app.state::<ConfigManager>().get().advanced.post_record_hook.clone();
-                                    crate::audio_switch::post_record(&hook);
+                                    crate::audio_switch::finish_recording(&hook);
                                 }
                                 if let Some(tid) = task_id {
                                     crate::task::process_recording(&t_app, tid, base64_audio, t_tmpl.clone());
@@ -336,7 +345,7 @@ fn start_voice_recording(
                                 #[cfg(target_os = "linux")]
                                 {
                                     let hook = t_app.state::<ConfigManager>().get().advanced.post_record_hook.clone();
-                                    crate::audio_switch::post_record(&hook);
+                                    crate::audio_switch::finish_recording(&hook);
                                 }
                                 if let Some(tid) = task_id {
                                     crate::task::cancel_recording(&t_app, tid);

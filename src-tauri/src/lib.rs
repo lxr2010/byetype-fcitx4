@@ -157,6 +157,14 @@ pub fn run() {
                 }
             }
         })
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        .build(tauri::generate_context!())
+        .expect("error while building tauri application")
+        .run(|_app_handle, event| {
+            // 应用退出（托盘退出 / 所有窗口销毁）时，恢复蓝牙 profile 自动
+            // 切换所占用的系统状态，避免耳机停留在电话音质。
+            #[cfg(target_os = "linux")]
+            if let tauri::RunEvent::Exit = event {
+                audio_switch::restore_session();
+            }
+        });
 }
